@@ -402,8 +402,7 @@ async function saveModalChanges() {
     status: newStatus,
     genre: newGenre,
     favorite: selectedItem.favorite || "",
-    recommend: selectedItem.recommend || "",
-    last_edited_at: new Date().toISOString()
+    recommend: selectedItem.recommend || ""
   };
 
   if (table === "books" || table === "comics") {
@@ -499,9 +498,7 @@ function openAddModal() {
   const payload = {
     cover_url: cover,
     genre: "",
-    status: "Plan to Watch",
-    created_at: new Date().toISOString(),
-    last_edited_at: new Date().toISOString()
+    status: "Plan to Watch"
   };
 
   if (table === "music") {
