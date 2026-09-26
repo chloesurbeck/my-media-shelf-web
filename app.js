@@ -1,322 +1,524 @@
-// ==============================================================================
-// MEDIA SHELF - APP LOGIC & SUPABASE INTEGRATION
-// ==============================================================================
+/**
+ * ==============================================================================
+ * WELCOME TO MY MEDIA SHELF - NOTION DASHBOARD & LIVE SUPABASE APP
+ * ==============================================================================
+ */
 
 let supabase = null;
-let currentCategory = "movies";
-let currentFilter = "all";
-let searchQuery = "";
-let page = 0;
-const PAGE_SIZE = 36;
-let currentItems = [];
-let totalCount = 0;
 let isAdmin = localStorage.getItem("shelf_admin") === "true";
 let selectedItem = null;
+let selectedItemCategory = "video_games";
+let globalSearchQuery = "";
 
-const CATEGORIES = [
-  { id: "movies", label: "Movies", icon: "film", table: "movies" },
-  { id: "television", label: "Television", icon: "tv", table: "television" },
-  { id: "video_games", label: "Video Games", icon: "gamepad-2", table: "video_games" },
-  { id: "books", label: "Books", icon: "book-open", table: "books" },
-  { id: "comics", label: "Comics", icon: "book", table: "comics" },
-  { id: "music", label: "Music", icon: "music", table: "music" }
+// The 6 Shelves in the exact order & Notion color palette from your screenshots
+const SHELF_CONFIGS = [
+  {
+    id: "video_games",
+    table: "video_games",
+    heading: "must play games",
+    headingColor: "#e07b24",
+    calloutEmoji: "🎮",
+    calloutLabel: "Video Games",
+    calloutBg: "#3b291e",
+    creatorKey: "developer",
+    creatorLabel: "Developer",
+    yearKey: "release_year",
+    yearLabel: "Release Year",
+    defaultStatus: "Played",
+    statuses: ["Played", "In Progress", "Plan to Play", "Dropped"]
+  },
+  {
+    id: "music",
+    table: "music",
+    heading: "must listen to music",
+    headingColor: "#cb912f",
+    calloutEmoji: "🎵",
+    calloutLabel: "Music",
+    calloutBg: "#223437",
+    creatorKey: "artist",
+    creatorLabel: "Artist",
+    yearKey: "release_year",
+    yearLabel: "Release Year",
+    defaultStatus: "Listened",
+    statuses: ["Listened", "Favorite", "Plan to Listen"]
+  },
+  {
+    id: "movies",
+    table: "movies",
+    heading: "must watch movies",
+    headingColor: "#448361",
+    calloutEmoji: "🎬",
+    calloutLabel: "Movies",
+    calloutBg: "#1f3329",
+    creatorKey: "director",
+    creatorLabel: "Director",
+    yearKey: "release_year",
+    yearLabel: "Release Year",
+    defaultStatus: "Watched",
+    statuses: ["Watched", "Plan to Watch", "In Progress", "Dropped"]
+  },
+  {
+    id: "television",
+    table: "television",
+    heading: "must see tv",
+    headingColor: "#337ea9",
+    calloutEmoji: "📺",
+    calloutLabel: "Television",
+    calloutBg: "#1e2f42",
+    creatorKey: "creator_studio",
+    creatorLabel: "Creator / Studio",
+    yearKey: "release_year",
+    yearLabel: "Release Year",
+    defaultStatus: "Watched",
+    statuses: ["Watched", "In Progress", "Plan to Watch", "Dropped"]
+  },
+  {
+    id: "comics",
+    table: "comics",
+    heading: "must read comics",
+    headingColor: "#9065b0",
+    calloutEmoji: "🗯️",
+    calloutLabel: "Comics",
+    calloutBg: "#2f243a",
+    creatorKey: "author",
+    creatorLabel: "Author / Creator",
+    yearKey: "publication_year",
+    yearLabel: "Publication Year",
+    defaultStatus: "Read",
+    statuses: ["Read", "In Progress", "Plan to Read", "Dropped"]
+  },
+  {
+    id: "books",
+    table: "books",
+    heading: "must read books",
+    headingColor: "#d44c47",
+    calloutEmoji: "📚",
+    calloutLabel: "Books",
+    calloutBg: "#3a2323",
+    creatorKey: "author",
+    creatorLabel: "Author",
+    yearKey: "publication_year",
+    yearLabel: "Publication Year",
+    defaultStatus: "Read",
+    statuses: ["Read", "In Progress", "Plan to Read", "Dropped"]
+  }
 ];
 
-const STATUS_FILTERS = [
-  { id: "all", label: "All" },
-  { id: "completed", label: "Finished" },
-  { id: "plan", label: "Plan to" },
-  { id: "favorites", label: "Favorites" },
-  { id: "recommend", label: "Recommended" }
-];
-
-// Initialize
-document.addEventListener("DOMContentLoaded", () => {
-  initSupabase();
-  renderCategoryTabs();
-  renderStatusFilters();
-  updateAdminUI();
-  fetchMedia(true);
+// State per shelf section on the main page
+const shelfState = {};
+SHELF_CONFIGS.forEach(cfg => {
+  shelfState[cfg.id] = {
+    activeTab: "favorite", // 'favorite' | 'recommend' | 'physical' | 'overview'
+    items: [],
+    totalCount: 0,
+    expandedLimit: 5
+  };
 });
 
-function initSupabase() {
-  if (window.SUPABASE_CONFIG && 
-      SUPABASE_CONFIG.url !== "YOUR_SUPABASE_PROJECT_URL" && 
-      SUPABASE_CONFIG.anonKey !== "YOUR_SUPABASE_ANON_KEY") {
+// Full Database View state (when clicking a callout bar)
+let activeDbCategory = "video_games";
+let activeDbFilter = "all";
+let dbItems = [];
+let dbPage = 0;
+const DB_PAGE_SIZE = 50;
+
+// ==============================================================================
+// INITIALIZATION
+// ==============================================================================
+document.addEventListener("DOMContentLoaded", () => {
+  lucide.createIcons();
+
+  if (window.SUPABASE_CONFIG && SUPABASE_CONFIG.url && !SUPABASE_CONFIG.url.includes("YOUR_PROJECT_ID")) {
     supabase = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
   }
+
+  updateAdminUI();
+  renderAllShelfSkeletons();
+  loadAllShelvesData();
+});
+
+function getCategoryMetaConfig(catId) {
+  return SHELF_CONFIGS.find(c => c.id === catId) || SHELF_CONFIGS[0];
 }
 
 // ==============================================================================
-// RENDER NAVIGATION & FILTERS
+// STACKED NOTION SHELVES (MAIN DASHBOARD)
 // ==============================================================================
-function renderCategoryTabs() {
-  const container = document.getElementById("category-tabs");
-  container.innerHTML = CATEGORIES.map(cat => {
-    const isActive = cat.id === currentCategory;
-    return `
-      <button 
-        onclick="selectCategory('${cat.id}')" 
-        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap ${
-          isActive 
-            ? 'bg-brand-600 text-white shadow-md shadow-brand-600/20' 
-            : 'bg-dark-800 text-gray-400 hover:text-white hover:bg-dark-700 border border-dark-700'
-        }"
+function renderAllShelfSkeletons() {
+  const container = document.getElementById("all-shelves-container");
+  container.innerHTML = SHELF_CONFIGS.map(cfg => `
+    <section id="shelf-sec-${cfg.id}" class="space-y-4 scroll-mt-16">
+      <!-- Colored Notion Heading -->
+      <div class="flex items-center justify-between">
+        <h2 class="text-xl sm:text-2xl font-bold tracking-tight" style="color: ${cfg.headingColor}">
+          ${cfg.heading}
+        </h2>
+        ${isAdmin ? `
+          <button onclick="openAddModalFor('${cfg.id}')" class="text-[11px] text-gray-400 hover:text-white flex items-center gap-1 px-2 py-1 rounded bg-[#262626] border border-white/10">
+            <span>+ Add ${cfg.calloutLabel.slice(0, -1)}</span>
+          </button>
+        ` : ''}
+      </div>
+
+      <!-- 4 Notion View Pills -->
+      <div class="flex flex-wrap items-center gap-1.5 sm:gap-2" id="pills-${cfg.id}">
+        <button onclick="switchSectionTab('${cfg.id}', 'favorite')" data-tab="favorite" class="notion-pill active">
+          <span class="opacity-80">⊞</span> <span>Favorite</span>
+        </button>
+        <button onclick="switchSectionTab('${cfg.id}', 'recommend')" data-tab="recommend" class="notion-pill">
+          <span class="opacity-80">⊞</span> <span>Recommendations</span>
+        </button>
+        <button onclick="switchSectionTab('${cfg.id}', 'physical')" data-tab="physical" class="notion-pill">
+          <span class="opacity-80">☰</span> <span>Physically Own</span>
+        </button>
+        <button onclick="switchSectionTab('${cfg.id}', 'overview')" data-tab="overview" class="notion-pill">
+          <span class="opacity-80">◔</span> <span>Total Overview</span>
+        </button>
+      </div>
+
+      <!-- 5-Card Horizontal Notion Gallery Grid -->
+      <div id="grid-${cfg.id}" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5 min-h-[160px]">
+        <div class="col-span-full text-xs text-gray-500 py-8">Loading ${cfg.calloutLabel.toLowerCase()}...</div>
+      </div>
+
+      <!-- Show More / Collapse inside Section -->
+      <div id="more-wrap-${cfg.id}" class="hidden flex justify-end">
+        <button id="btn-more-${cfg.id}" onclick="toggleSectionExpand('${cfg.id}')" class="text-xs text-gray-400 hover:text-white underline underline-offset-4">
+          Show more
+        </button>
+      </div>
+
+      <!-- Colored Notion Callout Bar Link (Matches Screenshots 2 & 3) -->
+      <div
+        onclick="openFullDatabaseView('${cfg.id}')"
+        class="notion-callout mt-3"
+        style="background-color: ${cfg.calloutBg}"
       >
-        <i data-lucide="${cat.icon}" class="w-3.5 h-3.5"></i>
-        <span>${cat.label}</span>
-      </button>
-    `;
-  }).join("");
-  lucide.createIcons();
+        <div class="flex items-center gap-2.5">
+          <span>${cfg.calloutEmoji}</span>
+          <span class="underline underline-offset-4 decoration-white/40 font-medium text-gray-100">${cfg.calloutLabel}</span>
+        </div>
+        <span id="count-${cfg.id}" class="text-[11px] text-gray-300/80 font-normal">View all →</span>
+      </div>
+    </section>
+  `).join("");
 }
 
-function renderStatusFilters() {
-  const container = document.getElementById("status-filters");
-  container.innerHTML = STATUS_FILTERS.map(f => {
-    const isActive = f.id === currentFilter;
-    return `
-      <button 
-        onclick="selectFilter('${f.id}')" 
-        class="px-2.5 py-1 rounded-lg text-xs font-medium transition whitespace-nowrap ${
-          isActive 
-            ? 'bg-brand-500/20 text-brand-300 border border-brand-500/30' 
-            : 'text-gray-400 hover:text-white bg-dark-800/40 border border-dark-700/50'
-        }"
-      >
-        ${f.label}
-      </button>
-    `;
-  }).join("");
+async function loadAllShelvesData() {
+  if (!supabase) return;
+  await Promise.all(SHELF_CONFIGS.map(cfg => fetchSectionTabItems(cfg.id)));
 }
 
-function selectCategory(catId) {
-  currentCategory = catId;
-  page = 0;
-  renderCategoryTabs();
-  fetchMedia(true);
-}
+async function fetchSectionTabItems(catId) {
+  const cfg = getCategoryMetaConfig(catId);
+  const state = shelfState[catId];
+  const tab = state.activeTab;
 
-function selectFilter(filterId) {
-  currentFilter = filterId;
-  page = 0;
-  renderStatusFilters();
-  fetchMedia(true);
-}
+  // Query total count + filtered items for this section
+  let query = supabase.from(cfg.table).select("*", { count: "exact" });
 
-function handleSearch(val) {
-  searchQuery = val.trim();
-  const clearBtn = document.getElementById("clear-search");
-  if (searchQuery.length > 0) {
-    clearBtn.classList.remove("hidden");
-  } else {
-    clearBtn.classList.add("hidden");
-  }
-  page = 0;
-  fetchMedia(true);
-}
-
-function clearSearch() {
-  const input = document.getElementById("search-input");
-  input.value = "";
-  handleSearch("");
-}
-
-// ==============================================================================
-// DATA FETCHING (SUPABASE REST / POSTGREST)
-// ==============================================================================
-async function fetchMedia(reset = false) {
-  if (reset) {
-    page = 0;
-    currentItems = [];
-    document.getElementById("media-grid").innerHTML = "";
-  }
-
-  const stats = document.getElementById("stats-counter");
-  const emptyState = document.getElementById("empty-state");
-  const loadMoreBtn = document.getElementById("btn-load-more");
-
-  if (!supabase) {
-    stats.innerHTML = `<span class="text-amber-400">⚠️ Setup required: Paste Supabase URL in config.js</span>`;
-    return;
-  }
-
-  stats.innerText = "Loading collection...";
-
-  const catObj = CATEGORIES.find(c => c.id === currentCategory) || CATEGORIES[0];
-  const table = catObj.table;
-
-  let query = supabase.from(table).select("*", { count: "exact" });
-
-  // Status Filters
-  if (currentFilter === "completed") {
-    query = query.ilike("status", "%watched%").or("status.ilike.%read%,status.ilike.%played%,status.ilike.%listened%,status.ilike.%completed%");
-  } else if (currentFilter === "plan") {
-    query = query.ilike("status", "%plan%");
-  } else if (currentFilter === "favorites") {
-    query = query.or("favorite.ilike.%yes%,favorite.eq.true");
-  } else if (currentFilter === "recommend") {
-    query = query.or("recommend.ilike.%yes%,recommend.eq.true");
-  }
-
-  // Search Filter
-  if (searchQuery) {
-    if (table === "music") {
-      query = query.or(`album.ilike.%${searchQuery}%,artist.ilike.%${searchQuery}%,genre.ilike.%${searchQuery}%`);
+  if (globalSearchQuery) {
+    if (cfg.table === "music") {
+      query = query.or(`album.ilike.%${globalSearchQuery}%,artist.ilike.%${globalSearchQuery}%,genre.ilike.%${globalSearchQuery}%`);
     } else {
-      query = query.or(`title.ilike.%${searchQuery}%,genre.ilike.%${searchQuery}%`);
+      query = query.or(`title.ilike.%${globalSearchQuery}%,genre.ilike.%${globalSearchQuery}%`);
+    }
+  } else {
+    if (tab === "favorite") {
+      if (cfg.table === "music") {
+        query = query.or("recommend.ilike.%yes%,status.ilike.%favorite%");
+      } else {
+        query = query.ilike("favorite", "%yes%");
+      }
+    } else if (tab === "recommend") {
+      query = query.ilike("recommend", "%yes%");
+    } else if (tab === "physical") {
+      query = query.ilike("physical_copy", "%yes%");
     }
   }
 
-  // Sorting
-  if (table === "music") {
+  if (cfg.table === "music") {
+    query = query.order("id", { ascending: true });
+  } else {
+    query = query.order("title", { ascending: true });
+  }
+
+  query = query.limit(40);
+
+  const { data, count, error } = await query;
+  if (error) {
+    console.warn(`Error loading ${catId}:`, error);
+    return;
+  }
+
+  // Also fetch total table count once for the callout bar badge
+  if (!state.totalCount) {
+    const { count: fullCount } = await supabase.from(cfg.table).select("id", { count: "exact", head: true });
+    state.totalCount = fullCount || (data ? data.length : 0);
+    const countEl = document.getElementById(`count-${catId}`);
+    if (countEl && state.totalCount) {
+      countEl.innerText = `${state.totalCount.toLocaleString()} titles →`;
+    }
+  }
+
+  state.items = data || [];
+  renderSectionGrid(catId);
+}
+
+function switchSectionTab(catId, tabName) {
+  const state = shelfState[catId];
+  state.activeTab = tabName;
+  state.expandedLimit = tabName === "overview" ? 15 : 5;
+
+  // Update active pill styling
+  const pillsWrap = document.getElementById(`pills-${catId}`);
+  if (pillsWrap) {
+    pillsWrap.querySelectorAll("button").forEach(btn => {
+      if (btn.getAttribute("data-tab") === tabName) {
+        btn.classList.add("active");
+      } else {
+        btn.classList.remove("active");
+      }
+    });
+  }
+
+  fetchSectionTabItems(catId);
+}
+
+function toggleSectionExpand(catId) {
+  const state = shelfState[catId];
+  state.expandedLimit = state.expandedLimit <= 5 ? 25 : 5;
+  renderSectionGrid(catId);
+}
+
+function renderSectionGrid(catId) {
+  const cfg = getCategoryMetaConfig(catId);
+  const state = shelfState[catId];
+  const grid = document.getElementById(`grid-${catId}`);
+  const moreWrap = document.getElementById(`more-wrap-${catId}`);
+  const moreBtn = document.getElementById(`btn-more-${catId}`);
+
+  if (!grid) return;
+
+  const visibleItems = state.items.slice(0, state.expandedLimit);
+
+  if (visibleItems.length === 0) {
+    grid.innerHTML = `
+      <div class="col-span-full py-6 px-4 rounded-xl bg-[#222222] border border-white/5 flex items-center justify-between text-xs text-gray-400">
+        <span>No items tagged in "${state.activeTab}" yet for ${cfg.calloutLabel}.</span>
+        <button onclick="switchSectionTab('${catId}', 'overview')" class="text-white underline underline-offset-4">View Total Overview →</button>
+      </div>
+    `;
+    moreWrap.classList.add("hidden");
+    return;
+  }
+
+  grid.innerHTML = visibleItems.map(item => buildNotionCardHtml(cfg.id, item, true)).join("");
+
+  if (state.items.length > 5) {
+    moreWrap.classList.remove("hidden");
+    moreBtn.innerText = state.expandedLimit <= 5 ? `Show all (${state.items.length})` : "Show top 5";
+  } else {
+    moreWrap.classList.add("hidden");
+  }
+}
+
+function buildNotionCardHtml(catId, item, isLandscape) {
+  const cfg = getCategoryMetaConfig(catId);
+  const title = item.title || item.album || "Untitled";
+  const subtitle = item[cfg.creatorKey] || item.director || item.creator_studio || item.developer || item.author || item.artist || "";
+  const year = item.release_year || item.publication_year || "";
+  const cover = item.cover_url || "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=600&q=80";
+  const isFav = (item.favorite || "").toLowerCase().includes("yes") || (item.status || "").toLowerCase() === "favorite";
+  const isRec = (item.recommend || "").toLowerCase().includes("yes");
+  const hasPhys = (item.physical_copy || "").toLowerCase().includes("yes");
+
+  const aspectClass = isLandscape ? "aspect-[16/10]" : "aspect-[2/3]";
+
+  return `
+    <div
+      onclick="openDetailModal('${catId}', ${item.id})"
+      class="notion-card cursor-pointer flex flex-col group relative"
+    >
+      <!-- Cover Image Area -->
+      <div class="relative ${aspectClass} w-full bg-[#1f1f1f] overflow-hidden">
+        <img
+          src="${cover}"
+          alt="${escapeHtml(title)}"
+          loading="lazy"
+          onerror="this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=600&q=80'"
+          class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+        />
+        <!-- Subtle Status Badges on Hover -->
+        <div class="absolute top-2 right-2 flex gap-1 opacity-85">
+          ${isFav ? '<span title="Favorite" class="p-1 bg-pink-600/90 text-white rounded shadow"><svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg></span>' : ''}
+          ${isRec ? '<span title="Recommended" class="p-1 bg-amber-500/90 text-white rounded shadow"><svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></span>' : ''}
+          ${hasPhys ? '<span title="Physically Own" class="p-1 bg-emerald-600/90 text-white rounded shadow"><svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg></span>' : ''}
+        </div>
+      </div>
+
+      <!-- Title & Subtitle Area (Matches Notion Card Bottom Area) -->
+      <div class="p-3 flex-1 flex flex-col justify-between bg-[#262626]">
+        <div class="text-xs font-medium text-gray-100 leading-snug line-clamp-2">${escapeHtml(title)}</div>
+        ${!isLandscape && (subtitle || year) ? `
+          <div class="text-[10px] text-gray-400 truncate mt-1.5">${escapeHtml(subtitle)} ${year ? '• ' + year : ''}</div>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+// ==============================================================================
+// FULL DATABASE VIEW (WHEN CLICKING CALLOUT BAR e.g. 🎮 Video Games)
+// ==============================================================================
+function openFullDatabaseView(catId, initialFilter = "all") {
+  activeDbCategory = catId;
+  activeDbFilter = initialFilter;
+  dbPage = 0;
+
+  const cfg = getCategoryMetaConfig(catId);
+  document.getElementById("shelf-hero").classList.add("hidden");
+  document.getElementById("all-shelves-container").classList.add("hidden");
+  document.getElementById("single-database-view").classList.remove("hidden");
+
+  document.getElementById("breadcrumb-divider").classList.remove("hidden");
+  const bc = document.getElementById("breadcrumb-current");
+  bc.classList.remove("hidden");
+  bc.innerText = `${cfg.calloutEmoji} ${cfg.calloutLabel}`;
+
+  const titleEl = document.getElementById("db-view-title");
+  titleEl.innerText = `${cfg.calloutEmoji} ${cfg.calloutLabel}`;
+  titleEl.style.color = cfg.headingColor;
+
+  setDbFilter(initialFilter);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function showAllShelvesHome() {
+  document.getElementById("single-database-view").classList.add("hidden");
+  document.getElementById("shelf-hero").classList.remove("hidden");
+  document.getElementById("all-shelves-container").classList.remove("hidden");
+  document.getElementById("breadcrumb-divider").classList.add("hidden");
+  document.getElementById("breadcrumb-current").classList.add("hidden");
+}
+
+function scrollToShelf(catId) {
+  showAllShelvesHome();
+  const el = document.getElementById(`shelf-sec-${catId}`);
+  if (el) el.scrollIntoView({ behavior: "smooth" });
+}
+
+function setDbFilter(filterName) {
+  activeDbFilter = filterName;
+  dbPage = 0;
+  ["all", "favorite", "recommend", "physical", "plan"].forEach(f => {
+    const el = document.getElementById(`dbf-${f}`);
+    if (el) {
+      if (f === filterName) el.classList.add("active");
+      else el.classList.remove("active");
+    }
+  });
+  fetchFullDbPage(true);
+}
+
+async function fetchFullDbPage(reset = true) {
+  if (!supabase) return;
+  const cfg = getCategoryMetaConfig(activeDbCategory);
+  let query = supabase.from(cfg.table).select("*", { count: "exact" });
+
+  if (activeDbFilter === "favorite") {
+    if (cfg.table === "music") query = query.or("recommend.ilike.%yes%,status.ilike.%favorite%");
+    else query = query.ilike("favorite", "%yes%");
+  } else if (activeDbFilter === "recommend") {
+    query = query.ilike("recommend", "%yes%");
+  } else if (activeDbFilter === "physical") {
+    query = query.ilike("physical_copy", "%yes%");
+  } else if (activeDbFilter === "plan") {
+    query = query.ilike("status", "%plan%");
+  }
+
+  if (globalSearchQuery) {
+    if (cfg.table === "music") {
+      query = query.or(`album.ilike.%${globalSearchQuery}%,artist.ilike.%${globalSearchQuery}%,genre.ilike.%${globalSearchQuery}%`);
+    } else {
+      query = query.or(`title.ilike.%${globalSearchQuery}%,genre.ilike.%${globalSearchQuery}%`);
+    }
+  }
+
+  if (cfg.table === "music") {
     query = query.order("artist", { ascending: true }).order("release_year", { ascending: false });
   } else {
     query = query.order("title", { ascending: true });
   }
 
-  // Pagination Range
-  const start = page * PAGE_SIZE;
-  const end = start + PAGE_SIZE - 1;
-  query = query.range(start, end);
+  const start = dbPage * DB_PAGE_SIZE;
+  query = query.range(start, start + DB_PAGE_SIZE - 1);
 
-  const { data, count, error } = await query;
+  const { data, count } = await query;
+  const items = data || [];
+  dbItems = reset ? items : [...dbItems, ...items];
 
-  if (error) {
-    console.error("Supabase Error:", error);
-    stats.innerText = `Error loading: ${error.message}`;
-    return;
-  }
+  document.getElementById("db-view-count").innerText = `(${(count || 0).toLocaleString()} titles)`;
+  const grid = document.getElementById("db-view-grid");
+  const html = items.map(item => buildNotionCardHtml(cfg.id, item, false)).join("");
 
-  totalCount = count || 0;
-  stats.innerText = `${totalCount.toLocaleString()} ${catObj.label.toLowerCase()}`;
+  if (reset) grid.innerHTML = html;
+  else grid.insertAdjacentHTML("beforeend", html);
 
-  if (reset) {
-    currentItems = data || [];
-  } else {
-    currentItems = [...currentItems, ...(data || [])];
-  }
-
-  renderGrid(data || [], reset);
-
-  if (currentItems.length === 0) {
-    emptyState.classList.remove("hidden");
-  } else {
-    emptyState.classList.add("hidden");
-  }
-
-  if (currentItems.length < totalCount) {
-    loadMoreBtn.classList.remove("hidden");
-  } else {
-    loadMoreBtn.classList.add("hidden");
-  }
+  const loadMoreBtn = document.getElementById("btn-db-load-more");
+  if (dbItems.length < (count || 0)) loadMoreBtn.classList.remove("hidden");
+  else loadMoreBtn.classList.add("hidden");
 }
 
-function loadMoreItems() {
-  page++;
-  fetchMedia(false);
+function loadMoreDbItems() {
+  dbPage++;
+  fetchFullDbPage(false);
 }
 
 // ==============================================================================
-// RENDER GRID & MEDIA CARDS
+// GLOBAL SEARCH
 // ==============================================================================
-function renderGrid(items, reset) {
-  const grid = document.getElementById("media-grid");
-  
-  const cardsHtml = items.map(item => {
-    const title = item.title || item.album || "Untitled";
-    const subtitle = item.director || item.creator_studio || item.developer || item.author || item.artist || "";
-    const year = item.release_year || item.publication_year || "";
-    const cover = item.cover_url || "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=600&q=80";
-    const status = item.status || "";
-    const isFav = (item.favorite || "").toLowerCase().includes("yes");
-    const isRec = (item.recommend || "").toLowerCase().includes("yes");
-    const hasPhys = (item.physical_copy || "").toLowerCase().includes("yes");
+let searchDebounce = null;
+function handleGlobalSearch(val) {
+  globalSearchQuery = val.trim();
+  const clearBtn = document.getElementById("clear-global-search");
+  if (globalSearchQuery) clearBtn.classList.remove("hidden");
+  else clearBtn.classList.add("hidden");
 
-    return `
-      <div 
-        onclick="openDetailModal(${item.id})"
-        class="card-hover group relative bg-dark-800 border border-dark-700/80 rounded-xl overflow-hidden cursor-pointer flex flex-col shadow-sm"
-      >
-        <!-- Poster / Cover Image -->
-        <div class="relative aspect-[2/3] w-full bg-dark-900 overflow-hidden">
-          <img 
-            src="${cover}" 
-            alt="${escapeHtml(title)}" 
-            loading="lazy"
-            onerror="this.src='https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=600&q=80'"
-            class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-          >
-          
-          <!-- Badges overlay -->
-          <div class="absolute top-2 right-2 flex flex-col gap-1 items-end">
-            ${isFav ? '<span title="Favorite" class="p-1 bg-pink-600/90 text-white rounded-md shadow backdrop-blur-md"><svg class="w-3 h-3 fill-current" viewBox="0 0 24 24"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg></span>' : ''}
-            ${isRec ? '<span title="Recommended" class="p-1 bg-amber-500/90 text-white rounded-md shadow backdrop-blur-md"><svg class="w-3 h-3 fill-current" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></span>' : ''}
-            ${hasPhys ? '<span title="Physical Copy" class="p-1 bg-emerald-600/90 text-white rounded-md shadow backdrop-blur-md"><svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg></span>' : ''}
-          </div>
-
-          ${year ? `<span class="absolute bottom-2 left-2 text-[10px] font-bold bg-black/70 text-gray-200 px-1.5 py-0.5 rounded backdrop-blur-md">${year}</span>` : ''}
-        </div>
-
-        <!-- Info -->
-        <div class="p-2.5 flex flex-col flex-1 justify-between bg-dark-800">
-          <div>
-            <h4 class="text-xs font-bold text-gray-100 line-clamp-1 group-hover:text-brand-400 transition" title="${escapeHtml(title)}">${escapeHtml(title)}</h4>
-            ${subtitle ? `<p class="text-[11px] text-gray-400 line-clamp-1 mt-0.5" title="${escapeHtml(subtitle)}">${escapeHtml(subtitle)}</p>` : ''}
-          </div>
-
-          ${status ? `
-            <div class="mt-2 pt-1 border-t border-dark-700/50 flex items-center justify-between">
-              <span class="text-[9px] uppercase font-bold text-gray-400 truncate">${status}</span>
-            </div>
-          ` : ''}
-        </div>
-      </div>
-    `;
-  }).join("");
-
-  if (reset) {
-    grid.innerHTML = cardsHtml;
-  } else {
-    grid.insertAdjacentHTML("beforeend", cardsHtml);
-  }
+  if (searchDebounce) clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => {
+    const isDbView = !document.getElementById("single-database-view").classList.contains("hidden");
+    if (isDbView) {
+      fetchFullDbPage(true);
+    } else {
+      loadAllShelvesData();
+    }
+  }, 300);
 }
 
-// ==============================================================================
-// CATEGORY METADATA HELPERS
-// ==============================================================================
-function getCategoryMetaConfig(catId) {
-  if (catId === "movies") {
-    return { creatorKey: "director", creatorLabel: "Director", yearKey: "release_year", yearLabel: "Release Year", defaultStatus: "Watched", statuses: ["Watched", "Plan to Watch", "In Progress", "Dropped"] };
-  } else if (catId === "television") {
-    return { creatorKey: "creator_studio", creatorLabel: "Creator / Studio", yearKey: "release_year", yearLabel: "Release Year", defaultStatus: "Watched", statuses: ["Watched", "In Progress", "Plan to Watch", "Dropped"] };
-  } else if (catId === "video_games") {
-    return { creatorKey: "developer", creatorLabel: "Developer", yearKey: "release_year", yearLabel: "Release Year", defaultStatus: "Played", statuses: ["Played", "In Progress", "Plan to Play", "Dropped"] };
-  } else if (catId === "books") {
-    return { creatorKey: "author", creatorLabel: "Author", yearKey: "publication_year", yearLabel: "Publication Year", defaultStatus: "Read", statuses: ["Read", "In Progress", "Plan to Read", "Dropped"] };
-  } else if (catId === "comics") {
-    return { creatorKey: "author", creatorLabel: "Author / Creator", yearKey: "publication_year", yearLabel: "Publication Year", defaultStatus: "Read", statuses: ["Read", "In Progress", "Plan to Read", "Dropped"] };
-  } else {
-    return { creatorKey: "artist", creatorLabel: "Artist", yearKey: "release_year", yearLabel: "Release Year", defaultStatus: "Listened", statuses: ["Listened", "Plan to Listen", "In Progress"] };
-  }
+function clearGlobalSearch() {
+  document.getElementById("global-search-input").value = "";
+  handleGlobalSearch("");
 }
 
 // ==============================================================================
 // DETAIL & EDIT MODAL
 // ==============================================================================
-function openDetailModal(itemId) {
-  selectedItem = currentItems.find(i => i.id === itemId);
+function openDetailModal(catId, itemId) {
+  selectedItemCategory = catId;
+  const cfg = getCategoryMetaConfig(catId);
+  const pool = [...(shelfState[catId]?.items || []), ...dbItems];
+  selectedItem = pool.find(i => i.id === itemId);
   if (!selectedItem) return;
 
   const modal = document.getElementById("detail-modal");
-  const cfg = getCategoryMetaConfig(currentCategory);
   const title = selectedItem.title || selectedItem.album || "Untitled";
   const subtitle = selectedItem[cfg.creatorKey] || selectedItem.director || selectedItem.creator_studio || selectedItem.developer || selectedItem.author || selectedItem.artist || "";
   const year = selectedItem.release_year || selectedItem.publication_year || "";
   const genre = selectedItem.genre || "N/A";
   const cover = selectedItem.cover_url || "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=600&q=80";
   const status = selectedItem.status || cfg.defaultStatus;
-  const isFav = (selectedItem.favorite || "").toLowerCase().includes("yes");
+  const isFav = (selectedItem.favorite || "").toLowerCase().includes("yes") || (selectedItem.status || "").toLowerCase() === "favorite";
   const isRec = (selectedItem.recommend || "").toLowerCase().includes("yes");
   const hasPhysical = (selectedItem.physical_copy || "").toLowerCase().includes("yes");
 
@@ -324,9 +526,8 @@ function openDetailModal(itemId) {
   document.getElementById("modal-banner-bg").src = cover;
   document.getElementById("modal-title").innerText = title;
   document.getElementById("modal-subtitle").innerText = subtitle;
-  document.getElementById("modal-category-badge").innerText = currentCategory.replace("_", " ");
+  document.getElementById("modal-category-badge").innerText = cfg.calloutLabel;
 
-  // Views vs Edits
   document.getElementById("modal-status-view").innerText = status;
   document.getElementById("modal-status-edit").value = status;
   document.getElementById("modal-year-view").innerText = year || "—";
@@ -337,12 +538,10 @@ function openDetailModal(itemId) {
   document.getElementById("modal-creator-edit").value = subtitle;
   document.getElementById("modal-cover-edit").value = selectedItem.cover_url || "";
 
-  // Toggles
-  updateModalToggleStyle("modal-fav-toggle", isFav, "Favorite", "text-pink-400 border-pink-500 bg-pink-500/10");
-  updateModalToggleStyle("modal-rec-toggle", isRec, "Recommended", "text-yellow-400 border-yellow-500 bg-yellow-500/10");
-  updateModalToggleStyle("modal-phys-toggle", hasPhysical, "Physical Copy", "text-emerald-400 border-emerald-500 bg-emerald-500/10");
+  updateModalToggleStyle("modal-fav-toggle", isFav, "text-pink-400 border-pink-500 bg-pink-500/10");
+  updateModalToggleStyle("modal-rec-toggle", isRec, "text-yellow-400 border-yellow-500 bg-yellow-500/10");
+  updateModalToggleStyle("modal-phys-toggle", hasPhysical, "text-emerald-400 border-emerald-500 bg-emerald-500/10");
 
-  // Admin Mode Controls in Modal
   const editFooter = document.getElementById("modal-edit-footer");
   const statusView = document.getElementById("modal-status-view");
   const statusEdit = document.getElementById("modal-status-edit");
@@ -384,22 +583,24 @@ function closeModal() {
   selectedItem = null;
 }
 
-function updateModalToggleStyle(elemId, isActive, label, activeClasses) {
+function updateModalToggleStyle(elemId, isActive, activeClasses) {
   const elem = document.getElementById(elemId);
   if (!elem) return;
   if (isActive) {
     elem.className = `flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border font-medium transition ${activeClasses}`;
   } else {
-    elem.className = "flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-dark-600 text-gray-400 transition hover:border-gray-500 hover:text-white";
+    elem.className = "flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-white/15 text-gray-400 transition hover:border-white/30 hover:text-white";
   }
 }
 
 async function toggleModalProp(prop) {
   if (!isAdmin) {
-    alert("Unlock Editor Mode (top right lock icon) to toggle Favorite, Recommend, or Physical Copy.");
+    alert("Unlock Editor Mode (lock icon in the top right) to edit tags.");
     return;
   }
   if (!selectedItem) return;
+  const cfg = getCategoryMetaConfig(selectedItemCategory);
+
   const curr = (selectedItem[prop] || "").toLowerCase().includes("yes");
   selectedItem[prop] = curr ? "" : "Yes";
 
@@ -407,19 +608,20 @@ async function toggleModalProp(prop) {
   const isRec = (selectedItem.recommend || "").toLowerCase().includes("yes");
   const hasPhysical = (selectedItem.physical_copy || "").toLowerCase().includes("yes");
 
-  updateModalToggleStyle("modal-fav-toggle", isFav, "Favorite", "text-pink-400 border-pink-500 bg-pink-500/10");
-  updateModalToggleStyle("modal-rec-toggle", isRec, "Recommended", "text-yellow-400 border-yellow-500 bg-yellow-500/10");
-  updateModalToggleStyle("modal-phys-toggle", hasPhysical, "Physical Copy", "text-emerald-400 border-emerald-500 bg-emerald-500/10");
+  updateModalToggleStyle("modal-fav-toggle", isFav, "text-pink-400 border-pink-500 bg-pink-500/10");
+  updateModalToggleStyle("modal-rec-toggle", isRec, "text-yellow-400 border-yellow-500 bg-yellow-500/10");
+  updateModalToggleStyle("modal-phys-toggle", hasPhysical, "text-emerald-400 border-emerald-500 bg-emerald-500/10");
 
-  // Immediately persist the toggle to Supabase so you don't even have to press Save Changes
   if (supabase) {
-    const catObj = CATEGORIES.find(c => c.id === currentCategory);
     const patchObj = {};
-    if (prop !== "favorite" || catObj.table !== "music") {
+    if (prop === "favorite" && cfg.table === "music") {
+      patchObj.recommend = selectedItem.favorite;
+      patchObj.status = selectedItem.favorite === "Yes" ? "Favorite" : "Listened";
+    } else {
       patchObj[prop] = selectedItem[prop];
-      await supabase.from(catObj.table).update(patchObj).eq("id", selectedItem.id);
-      renderGrid(currentItems, true);
     }
+    await supabase.from(cfg.table).update(patchObj).eq("id", selectedItem.id);
+    fetchSectionTabItems(selectedItemCategory);
   }
 }
 
@@ -427,7 +629,7 @@ async function autoLookupForEditModal() {
   if (!selectedItem) return;
   const title = selectedItem.title || selectedItem.album || "";
   if (!title) return;
-  const matches = await lookupMediaCandidates(currentCategory, title);
+  const matches = await lookupMediaCandidates(selectedItemCategory, title);
   if (matches.length > 0) {
     const best = matches[0];
     if (best.creator) document.getElementById("modal-creator-edit").value = best.creator;
@@ -443,9 +645,7 @@ async function autoLookupForEditModal() {
 
 async function saveModalChanges() {
   if (!selectedItem || !supabase) return;
-  const catObj = CATEGORIES.find(c => c.id === currentCategory);
-  const table = catObj.table;
-  const cfg = getCategoryMetaConfig(currentCategory);
+  const cfg = getCategoryMetaConfig(selectedItemCategory);
 
   const newStatus = document.getElementById("modal-status-edit").value;
   const newYear = document.getElementById("modal-year-edit").value.trim();
@@ -461,35 +661,36 @@ async function saveModalChanges() {
     cover_url: newCover
   };
 
-  if (table !== "music") {
+  if (cfg.table !== "music") {
     updates.favorite = selectedItem.favorite || "";
   }
   updates[cfg.creatorKey] = newCreator;
   updates[cfg.yearKey] = newYear;
 
-  const { error } = await supabase.from(table).update(updates).eq("id", selectedItem.id);
+  const { error } = await supabase.from(cfg.table).update(updates).eq("id", selectedItem.id);
 
   if (error) {
     alert("Error saving: " + error.message);
   } else {
     closeModal();
-    fetchMedia(true);
+    fetchSectionTabItems(selectedItemCategory);
+    if (!document.getElementById("single-database-view").classList.contains("hidden")) {
+      fetchFullDbPage(true);
+    }
   }
 }
 
 async function deleteCurrentItem() {
   if (!selectedItem || !supabase) return;
-  if (!confirm(`Are you sure you want to delete "${selectedItem.title || selectedItem.album}"?`)) return;
+  const cfg = getCategoryMetaConfig(selectedItemCategory);
+  if (!confirm(`Delete "${selectedItem.title || selectedItem.album}"?`)) return;
 
-  const catObj = CATEGORIES.find(c => c.id === currentCategory);
-  const table = catObj.table;
-
-  const { error } = await supabase.from(table).delete().eq("id", selectedItem.id);
+  const { error } = await supabase.from(cfg.table).delete().eq("id", selectedItem.id);
   if (error) {
     alert("Error deleting: " + error.message);
   } else {
     closeModal();
-    fetchMedia(true);
+    fetchSectionTabItems(selectedItemCategory);
   }
 }
 
@@ -502,16 +703,18 @@ function toggleAdminPrompt() {
       isAdmin = false;
       localStorage.setItem("shelf_admin", "false");
       updateAdminUI();
-      fetchMedia(true);
+      renderAllShelfSkeletons();
+      loadAllShelvesData();
     }
   } else {
     const code = prompt("Enter Editor Passcode:");
-    const validCode = (window.SUPABASE_CONFIG && SUPABASE_CONFIG.adminPasscode) ? SUPABASE_CONFIG.adminPasscode : "1234";
+    const validCode = (window.SUPABASE_CONFIG && SUPABASE_CONFIG.adminPasscode) ? SUPABASE_CONFIG.adminPasscode : "LuckyGirl";
     if (code === validCode) {
       isAdmin = true;
       localStorage.setItem("shelf_admin", "true");
       updateAdminUI();
-      fetchMedia(true);
+      renderAllShelfSkeletons();
+      loadAllShelvesData();
     } else if (code !== null) {
       alert("Incorrect passcode.");
     }
@@ -527,13 +730,13 @@ function updateAdminUI() {
   if (isAdmin) {
     badge.classList.remove("hidden");
     lockIcon.setAttribute("data-lucide", "unlock");
-    lockIcon.classList.add("text-brand-400");
+    lockIcon.classList.add("text-emerald-400");
     addBtn.classList.remove("hidden");
     mobileAddBtn.classList.remove("hidden");
   } else {
     badge.classList.add("hidden");
     lockIcon.setAttribute("data-lucide", "lock");
-    lockIcon.classList.remove("text-brand-400");
+    lockIcon.classList.remove("text-emerald-400");
     addBtn.classList.add("hidden");
     mobileAddBtn.classList.add("hidden");
   }
@@ -551,9 +754,13 @@ let addModalState = {
   matches: []
 };
 
-function openAddModal() {
+function openAddModalFor(catId) {
+  openAddModal(catId);
+}
+
+function openAddModal(defaultCat) {
   const modal = document.getElementById("add-modal");
-  document.getElementById("add-category").value = currentCategory;
+  document.getElementById("add-category").value = defaultCat || activeDbCategory || "video_games";
   document.getElementById("add-title").value = "";
   document.getElementById("add-creator").value = "";
   document.getElementById("add-year").value = "";
@@ -563,7 +770,7 @@ function openAddModal() {
   document.getElementById("add-lookup-matches").classList.add("hidden");
   document.getElementById("add-lookup-list").innerHTML = "";
 
-  addModalState = { favorite: "", recommend: "", physical_copy: "", lookupTimer: null, matches: [] };
+  addModalState = { favorite: "Yes", recommend: "", physical_copy: "", lookupTimer: null, matches: [] };
   refreshAddTagStyles();
   onAddCategoryChange();
 
@@ -581,16 +788,14 @@ function onAddCategoryChange() {
   const cfg = getCategoryMetaConfig(catId);
   document.getElementById("add-creator-label").innerText = cfg.creatorLabel;
   document.getElementById("add-year-label").innerText = cfg.yearLabel;
-  document.getElementById("add-title-label").innerText = catId === "music" ? "2. Album Title (or Artist - Album)" : "2. Title (Auto-Lookups Cover & Details)";
+  document.getElementById("add-title-label").innerText = catId === "music" ? "2. Album Title (or Artist - Album)" : "2. Title (Dynamic Cover & Creator Lookup)";
 
   const statusSel = document.getElementById("add-status");
   statusSel.innerHTML = cfg.statuses.map(s => `<option value="${s}">${s}</option>`).join("");
   statusSel.value = cfg.defaultStatus;
 
   const q = document.getElementById("add-title").value.trim();
-  if (q.length >= 2) {
-    triggerAutoLookup();
-  }
+  if (q.length >= 2) triggerAutoLookup();
 }
 
 function toggleAddTag(tag) {
@@ -599,9 +804,9 @@ function toggleAddTag(tag) {
 }
 
 function refreshAddTagStyles() {
-  updateModalToggleStyle("add-fav-btn", addModalState.favorite === "Yes", "Favorite", "text-pink-400 border-pink-500 bg-pink-500/10");
-  updateModalToggleStyle("add-rec-btn", addModalState.recommend === "Yes", "Recommend", "text-yellow-400 border-yellow-500 bg-yellow-500/10");
-  updateModalToggleStyle("add-phys-btn", addModalState.physical_copy === "Yes", "Physical Copy", "text-emerald-400 border-emerald-500 bg-emerald-500/10");
+  updateModalToggleStyle("add-fav-btn", addModalState.favorite === "Yes", "text-pink-400 border-pink-500 bg-pink-500/10");
+  updateModalToggleStyle("add-rec-btn", addModalState.recommend === "Yes", "text-yellow-400 border-yellow-500 bg-yellow-500/10");
+  updateModalToggleStyle("add-phys-btn", addModalState.physical_copy === "Yes", "text-emerald-400 border-emerald-500 bg-emerald-500/10");
 }
 
 function onAddTitleInput() {
@@ -610,7 +815,7 @@ function onAddTitleInput() {
   if (q.length < 3) return;
   addModalState.lookupTimer = setTimeout(() => {
     triggerAutoLookup();
-  }, 550);
+  }, 500);
 }
 
 async function triggerAutoLookup() {
@@ -648,9 +853,9 @@ function renderLookupMatches(matches) {
     <button
       type="button"
       onclick="applyLookupMatch(${idx})"
-      class="flex items-center gap-2.5 p-2 rounded-xl bg-dark-900/90 hover:bg-dark-700 border border-dark-700 text-left transition"
+      class="flex items-center gap-2.5 p-2 rounded-xl bg-[#262626] hover:bg-[#323232] border border-white/10 text-left transition"
     >
-      <img src="${m.cover || 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=200&q=80'}" class="w-8 h-11 object-cover rounded flex-shrink-0 bg-dark-800">
+      <img src="${m.cover || 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=200&q=80'}" class="w-8 h-11 object-cover rounded flex-shrink-0 bg-[#191919]">
       <div class="min-w-0 flex-1">
         <div class="text-xs font-bold text-white truncate">${escapeHtml(m.title)}</div>
         <div class="text-[10px] text-gray-400 truncate">${escapeHtml(m.creator || 'Unknown')} ${m.year ? '• ' + m.year : ''}</div>
@@ -675,7 +880,6 @@ function applyLookupMatch(index) {
 async function lookupMediaCandidates(catId, query) {
   const out = [];
 
-  // 1. Movies -> iTunes Movie API + Wikipedia fallback
   if (catId === "movies") {
     try {
       const r = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&country=US&media=movie&entity=movie&limit=4`);
@@ -694,10 +898,7 @@ async function lookupMediaCandidates(catId, query) {
       const w = await wikiBrowserLookup(query, "film", ["director", "writer"], "Drama");
       if (w) out.push(w);
     }
-  }
-
-  // 2. Television -> TVMaze API + Wikipedia fallback
-  else if (catId === "television") {
+  } else if (catId === "television") {
     try {
       const r = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query)}`);
       const d = await r.json();
@@ -718,16 +919,10 @@ async function lookupMediaCandidates(catId, query) {
       const w = await wikiBrowserLookup(query, "TV series", ["creator", "developer", "studio", "network"], "Drama");
       if (w) out.push(w);
     }
-  }
-
-  // 3. Video Games -> Wikipedia Infobox + PageImage API (CORS origin=*)
-  else if (catId === "video_games") {
+  } else if (catId === "video_games") {
     const w = await wikiBrowserLookup(query, "video game", ["developer", "developers", "publisher"], "Adventure");
     if (w) out.push(w);
-  }
-
-  // 4. Books & Comics -> Google Books API + OpenLibrary + Wikipedia
-  else if (catId === "books" || catId === "comics") {
+  } else if (catId === "books" || catId === "comics") {
     try {
       const gq = catId === "comics" ? `${query} manga OR comic` : `intitle:${query}`;
       const r = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(gq)}&maxResults=4`);
@@ -750,10 +945,7 @@ async function lookupMediaCandidates(catId, query) {
       const w = await wikiBrowserLookup(query, catId === "comics" ? "manga comic" : "book novel", ["author", "writer", "creator"], catId === "comics" ? "Comics / Manga" : "Fiction");
       if (w) out.push(w);
     }
-  }
-
-  // 5. Music -> iTunes Album Search API
-  else if (catId === "music") {
+  } else if (catId === "music") {
     try {
       const r = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&country=US&media=music&entity=album&limit=4`);
       const d = await r.json();
@@ -829,9 +1021,7 @@ async function wikiBrowserLookup(query, hint, creatorKeys, defaultGenre) {
 async function submitAddModal() {
   if (!supabase) return;
   const catId = document.getElementById("add-category").value;
-  const catObj = CATEGORIES.find(c => c.id === catId) || CATEGORIES[0];
   const cfg = getCategoryMetaConfig(catId);
-  const table = catObj.table;
 
   const title = document.getElementById("add-title").value.trim();
   if (!title) {
@@ -845,7 +1035,7 @@ async function submitAddModal() {
   const status = document.getElementById("add-status").value;
   const cover = document.getElementById("add-cover-url").value.trim();
 
-  // Strictly only save the clean columns (no url, notion_id, created_at, or last_edited_at)
+  // Strictly only save clean columns (no url, notion_id, created_at, or last_edited_at)
   const payload = {
     genre: genre || "General",
     status: status,
@@ -854,8 +1044,12 @@ async function submitAddModal() {
     cover_url: cover
   };
 
-  if (table === "music") {
+  if (cfg.table === "music") {
     payload.album = title;
+    if (addModalState.favorite === "Yes") {
+      payload.recommend = "Yes";
+      payload.status = "Favorite";
+    }
   } else {
     payload.title = title;
     payload.favorite = addModalState.favorite;
@@ -867,32 +1061,27 @@ async function submitAddModal() {
   const btn = document.getElementById("btn-submit-add");
   btn.disabled = true;
 
-  const { data, error } = await supabase.from(table).insert([payload]).select();
+  const { data, error } = await supabase.from(cfg.table).insert([payload]).select();
   btn.disabled = false;
 
   if (error) {
     alert("Error adding title: " + error.message);
   } else {
     closeAddModal();
-    if (currentCategory !== catId) {
-      selectCategory(catId);
-    } else {
-      await fetchMedia(true);
-    }
-    // Automatically open the newly added item's detail modal so you can view/adjust Recommend, Favorite, or Physical Copy anytime!
+    await fetchSectionTabItems(catId);
     if (data && data.length > 0) {
       const inserted = data[0];
-      if (!currentItems.find(i => i.id === inserted.id)) {
-        currentItems.unshift(inserted);
+      if (!shelfState[catId].items.find(i => i.id === inserted.id)) {
+        shelfState[catId].items.unshift(inserted);
       }
-      openDetailModal(inserted.id);
+      openDetailModal(catId, inserted.id);
     }
   }
 }
 
 function escapeHtml(text) {
   if (!text) return "";
-  return text
+  return String(text)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
